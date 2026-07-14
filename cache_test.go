@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/stretchr/testify/assert"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -63,6 +64,31 @@ func TestCache_GetParallel(t *testing.T) {
 
 	wg.Wait()
 	assert.Equal(t, 1, updateCnt)
+}
+
+func TestCache_GetParallelDistinctKeys(t *testing.T) {
+
+	// Each key has its own keyed mutex, so concurrent Get calls on different keys read and write the shared entries
+	// map at the same time. This reproduces the "concurrent map read and map write" fatal error when run with -race.
+	testCache := NewUpdateCache(5*time.Minute, func(ctx context.Context, key string) (EntryUpdate[string], error) {
+		return EntryUpdate[string]{Value: key}, nil
+	})
+
+	wg := &sync.WaitGroup{}
+	for i := 0; i < 100; i++ {
+		key := strconv.Itoa(i)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				res, _, err := testCache.Get(context.Background(), key)
+				assert.NoError(t, err)
+				assert.Equal(t, key, res)
+			}
+		}()
+	}
+
+	wg.Wait()
 }
 
 func TestCache_GetExpires(t *testing.T) {
