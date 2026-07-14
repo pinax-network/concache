@@ -23,7 +23,7 @@ type UpdateFunc[T any] func(ctx context.Context, key string) (EntryUpdate[T], er
 // entry is missing or expired, it will be updated within the Get method from the UpdateFunc.
 type UpdateCache[T any] struct {
 	keyLocks    *keyedMutex
-	entriesLock *sync.Mutex
+	entriesLock sync.RWMutex
 	ttl         time.Duration
 	entries     map[string]*Entry[T]
 	updateFunc  UpdateFunc[T]
@@ -35,11 +35,10 @@ type UpdateCache[T any] struct {
 // The UpdateCache is thread-safe and can be called from multiple goroutines.
 func NewUpdateCache[T any](ttl time.Duration, updateFunc UpdateFunc[T]) *UpdateCache[T] {
 	return &UpdateCache[T]{
-		keyLocks:    newKeyedMutex(),
-		entriesLock: &sync.Mutex{},
-		ttl:         ttl,
-		entries:     make(map[string]*Entry[T]),
-		updateFunc:  updateFunc,
+		keyLocks:   newKeyedMutex(),
+		ttl:        ttl,
+		entries:    make(map[string]*Entry[T]),
+		updateFunc: updateFunc,
 	}
 }
 
@@ -54,32 +53,36 @@ func (c *UpdateCache[T]) Get(ctx context.Context, key string) (res T, hit bool, 
 	unlock := c.keyLocks.Lock(key)
 	defer unlock()
 
-	if entry, exists := c.entries[key]; exists && entry.ExpiresAt.After(time.Now()) {
+	c.entriesLock.RLock()
+	entry, exists := c.entries[key]
+	c.entriesLock.RUnlock()
+
+	if exists && entry.ExpiresAt.After(time.Now()) {
 		return entry.Value, true, entry.Error
-	} else {
-		entry, err := c.updateFunc(ctx, key)
-
-		// In case we receive an *UpdateFunc* error here, we won't store the result and just return the error here.
-		// In this case, we want to retry loading the entry again on the next Get call.
-		if err != nil {
-			return res, false, err
-		}
-
-		// acquire a write lock on the cache to update the entry
-		c.entriesLock.Lock()
-		defer c.entriesLock.Unlock()
-
-		// In case the error is embedded within the EntryUpdate, we still return it as the error below, but also update
-		// the cache. This allows us to cache persistent errors and reduce the load on any underlying datasource by not
-		// calling the UpdateFunc again until the cache entry expires.
-		c.entries[key] = &Entry[T]{
-			Value:     entry.Value,
-			Error:     entry.Error,
-			ExpiresAt: time.Now().Add(c.ttl),
-		}
-
-		return entry.Value, false, entry.Error
 	}
+
+	update, err := c.updateFunc(ctx, key)
+
+	// In case we receive an *UpdateFunc* error here, we won't store the result and just return the error here.
+	// In this case, we want to retry loading the entry again on the next Get call.
+	if err != nil {
+		return res, false, err
+	}
+
+	// acquire a write lock on the cache to update the entry
+	c.entriesLock.Lock()
+	defer c.entriesLock.Unlock()
+
+	// In case the error is embedded within the EntryUpdate, we still return it as the error below, but also update
+	// the cache. This allows us to cache persistent errors and reduce the load on any underlying datasource by not
+	// calling the UpdateFunc again until the cache entry expires.
+	c.entries[key] = &Entry[T]{
+		Value:     update.Value,
+		Error:     update.Error,
+		ExpiresAt: time.Now().Add(c.ttl),
+	}
+
+	return update.Value, false, update.Error
 }
 
 // Prune removes all expired entries from the cache.
