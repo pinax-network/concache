@@ -40,75 +40,58 @@ func staleCache(t *testing.T, maxStaleAge time.Duration) (cache *UpdateCache[str
 	return cache, &now, &shouldFail
 }
 
-func TestGetEntry_ReportsWhereTheValueCameFrom(t *testing.T) {
+func TestGet_ReportsWhereTheValueCameFrom(t *testing.T) {
 
 	cache, _, _ := staleCache(t, 0)
 
-	_, state, err := cache.GetEntry(context.Background(), "key")
+	_, state, err := cache.Get(context.Background(), "key")
 	require.NoError(t, err)
 	assert.Equal(t, StateFresh, state)
 
-	_, state, err = cache.GetEntry(context.Background(), "key")
+	_, state, err = cache.Get(context.Background(), "key")
 	require.NoError(t, err)
 	assert.Equal(t, StateHit, state)
 }
 
-func TestGetEntry_ServesStaleWhileTheSourceIsDown(t *testing.T) {
+func TestGet_ServesStaleWhileTheSourceIsDown(t *testing.T) {
 
 	cache, clock, failing := staleCache(t, 10*time.Minute)
 
-	fresh, state, err := cache.GetEntry(context.Background(), "key")
+	fresh, state, err := cache.Get(context.Background(), "key")
 	require.NoError(t, err)
 	require.Equal(t, StateFresh, state)
 
 	*clock = clock.Add(2 * time.Minute) // past the ttl, inside the stale window
 	*failing = true
 
-	value, state, err := cache.GetEntry(context.Background(), "key")
+	value, state, err := cache.Get(context.Background(), "key")
 
 	assert.Equal(t, StateStale, state)
 	assert.Equal(t, fresh, value, "the previous value must be served rather than a zero value")
 	assert.ErrorIs(t, err, errSourceDown, "the error must still explain why the value is stale")
 }
 
-func TestGetEntry_StopsServingStalePastTheWindow(t *testing.T) {
+func TestGet_StopsServingStalePastTheWindow(t *testing.T) {
 
 	cache, clock, failing := staleCache(t, 10*time.Minute)
 
-	_, _, err := cache.GetEntry(context.Background(), "key")
+	_, _, err := cache.Get(context.Background(), "key")
 	require.NoError(t, err)
 
 	// ttl plus the stale window have both elapsed.
 	*clock = clock.Add(11*time.Minute + time.Second)
 	*failing = true
 
-	value, state, err := cache.GetEntry(context.Background(), "key")
+	value, state, err := cache.Get(context.Background(), "key")
 
 	assert.Equal(t, StateMiss, state)
 	assert.Empty(t, value)
 	assert.ErrorIs(t, err, errSourceDown)
 }
 
-func TestGetEntry_NoStaleWithoutTheOption(t *testing.T) {
+func TestGet_NoStaleWithoutTheOption(t *testing.T) {
 
 	cache, clock, failing := staleCache(t, 0)
-
-	_, _, err := cache.GetEntry(context.Background(), "key")
-	require.NoError(t, err)
-
-	*clock = clock.Add(2 * time.Minute)
-	*failing = true
-
-	value, state, err := cache.GetEntry(context.Background(), "key")
-
-	assert.Equal(t, StateMiss, state, "stale reads must be opt in")
-	assert.Empty(t, value)
-	assert.ErrorIs(t, err, errSourceDown)
-}
-
-func TestGet_NeverServesStale(t *testing.T) {
-
-	cache, clock, failing := staleCache(t, 10*time.Minute)
 
 	_, _, err := cache.Get(context.Background(), "key")
 	require.NoError(t, err)
@@ -116,28 +99,27 @@ func TestGet_NeverServesStale(t *testing.T) {
 	*clock = clock.Add(2 * time.Minute)
 	*failing = true
 
-	// Existing callers must be unaffected by the option, whatever it is set to.
-	value, hit, err := cache.Get(context.Background(), "key")
+	value, state, err := cache.Get(context.Background(), "key")
 
-	assert.False(t, hit)
+	assert.Equal(t, StateMiss, state, "stale reads must be opt in")
 	assert.Empty(t, value)
 	assert.ErrorIs(t, err, errSourceDown)
 }
 
-func TestGetEntry_RefreshesOnceTheSourceRecovers(t *testing.T) {
+func TestGet_RefreshesOnceTheSourceRecovers(t *testing.T) {
 
 	cache, clock, failing := staleCache(t, 10*time.Minute)
 
-	first, _, err := cache.GetEntry(context.Background(), "key")
+	first, _, err := cache.Get(context.Background(), "key")
 	require.NoError(t, err)
 
 	*clock = clock.Add(2 * time.Minute)
 	*failing = true
-	_, state, _ := cache.GetEntry(context.Background(), "key")
+	_, state, _ := cache.Get(context.Background(), "key")
 	require.Equal(t, StateStale, state)
 
 	*failing = false
-	value, state, err := cache.GetEntry(context.Background(), "key")
+	value, state, err := cache.Get(context.Background(), "key")
 
 	require.NoError(t, err)
 	assert.Equal(t, StateFresh, state)
@@ -148,7 +130,7 @@ func TestPrune_KeepsEntriesInsideTheStaleWindow(t *testing.T) {
 
 	cache, clock, _ := staleCache(t, 10*time.Minute)
 
-	_, _, err := cache.GetEntry(context.Background(), "key")
+	_, _, err := cache.Get(context.Background(), "key")
 	require.NoError(t, err)
 
 	*clock = clock.Add(2 * time.Minute) // expired, still stale-usable
@@ -158,4 +140,21 @@ func TestPrune_KeepsEntriesInsideTheStaleWindow(t *testing.T) {
 	*clock = clock.Add(10 * time.Minute)
 	cache.Prune()
 	assert.Equal(t, 0, cache.Len())
+}
+
+func TestWithMaxStaleAge_NegativeIsTreatedAsZero(t *testing.T) {
+
+	cache := NewUpdateCache(time.Minute, func(_ context.Context, _ string) (EntryUpdate[string], error) {
+		return EntryUpdate[string]{Value: "value"}, nil
+	}, WithMaxStaleAge(-time.Hour))
+
+	_, _, err := cache.Get(context.Background(), "key")
+	require.NoError(t, err)
+
+	cache.Prune()
+	assert.Equal(t, 1, cache.Len(), "a negative stale age must never prune a fresh entry")
+
+	expireEntry(cache, "key")
+	cache.Prune()
+	assert.Equal(t, 0, cache.Len(), "stale reads stay disabled, so an expired entry is pruned right away")
 }

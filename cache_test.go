@@ -23,17 +23,17 @@ func TestCache_Get(t *testing.T) {
 	})
 
 	// test we get a valid response
-	res, hit, err := testCache.Get(context.Background(), "test_key")
+	res, state, err := testCache.Get(context.Background(), "test_key")
 	assert.NoError(t, err)
 	assert.Equal(t, "test_result", res)
-	assert.Equal(t, false, hit)
+	assert.Equal(t, StateFresh, state)
 	assert.Equal(t, 1, updateCnt)
 
 	// test the same key to ensure it's cached and UpdateFunc isn't called again
-	res, hit, err = testCache.Get(context.Background(), "test_key")
+	res, state, err = testCache.Get(context.Background(), "test_key")
 	assert.NoError(t, err)
 	assert.Equal(t, "test_result", res)
-	assert.Equal(t, true, hit)
+	assert.Equal(t, StateHit, state)
 	assert.Equal(t, 1, updateCnt)
 }
 
@@ -105,18 +105,18 @@ func TestCache_GetExpires(t *testing.T) {
 	putEntry(testCache, "test_key", "test_result", time.Now().Add(5*time.Minute))
 
 	// test we get a cached response
-	res, hit, err := testCache.Get(context.Background(), "test_key")
+	res, state, err := testCache.Get(context.Background(), "test_key")
 	assert.NoError(t, err)
 	assert.Equal(t, "test_result", res)
-	assert.Equal(t, true, hit)
+	assert.Equal(t, StateHit, state)
 	assert.Equal(t, 0, updateCnt)
 
 	// test we update the expired entry
 	expireEntry(testCache, "test_key")
-	res, hit, err = testCache.Get(context.Background(), "test_key")
+	res, state, err = testCache.Get(context.Background(), "test_key")
 	assert.NoError(t, err)
 	assert.Equal(t, "test_result", res)
-	assert.Equal(t, false, hit)
+	assert.Equal(t, StateFresh, state)
 	assert.Equal(t, 1, updateCnt)
 }
 
@@ -131,16 +131,16 @@ func TestCache_GetError(t *testing.T) {
 	})
 
 	// we should get a test error
-	_, hit, err := testCache.Get(context.Background(), "test_key")
+	_, state, err := testCache.Get(context.Background(), "test_key")
 	assert.Equal(t, testError, err)
 	assert.Equal(t, 1, updateCnt)
-	assert.Equal(t, false, hit)
+	assert.Equal(t, StateMiss, state)
 
 	// no entry should be cached, so calling Get() again should trigger the UpdateFunc
-	_, hit, err = testCache.Get(context.Background(), "test_key")
+	_, state, err = testCache.Get(context.Background(), "test_key")
 	assert.Equal(t, testError, err)
 	assert.Equal(t, 2, updateCnt)
-	assert.Equal(t, false, hit)
+	assert.Equal(t, StateMiss, state)
 }
 
 func TestCache_GetEmbeddedError(t *testing.T) {
@@ -154,16 +154,16 @@ func TestCache_GetEmbeddedError(t *testing.T) {
 	})
 
 	// we should get a test error
-	_, hit, err := testCache.Get(context.Background(), "test_key")
+	_, state, err := testCache.Get(context.Background(), "test_key")
 	assert.Equal(t, testError, err)
 	assert.Equal(t, 1, updateCnt)
-	assert.Equal(t, false, hit)
+	assert.Equal(t, StateFresh, state)
 
 	// as the error is embedded, it should be cached
-	_, hit, err = testCache.Get(context.Background(), "test_key")
+	_, state, err = testCache.Get(context.Background(), "test_key")
 	assert.Equal(t, testError, err)
 	assert.Equal(t, 1, updateCnt)
-	assert.Equal(t, true, hit)
+	assert.Equal(t, StateHit, state)
 }
 
 func TestCache_GetParallelErrors(t *testing.T) {
@@ -211,8 +211,8 @@ func TestCache_Prune(t *testing.T) {
 	putEntry(testCache, "test_key_expired", "test_result_expired", time.Now().Add(5*time.Minute))
 
 	// we load it first to initialize the locks
-	res, hit, err := testCache.Get(context.Background(), "test_key_expired")
-	assert.Equal(t, true, hit)
+	res, state, err := testCache.Get(context.Background(), "test_key_expired")
+	assert.Equal(t, StateHit, state)
 	assert.NoError(t, err)
 	assert.Equal(t, "test_result_expired", res)
 	assert.True(t, hasEntry(testCache, "test_key_expired"))
@@ -225,13 +225,13 @@ func TestCache_Prune(t *testing.T) {
 
 	// the expired entry should be gone now
 	assert.False(t, hasEntry(testCache, "test_key_expired"))
-	_, hit, err = testCache.Get(context.Background(), "test_key_expired")
-	assert.Equal(t, false, hit)
+	_, state, err = testCache.Get(context.Background(), "test_key_expired")
+	assert.Equal(t, StateMiss, state)
 	assert.Equal(t, notImplementedError, err)
 
 	// the test_key should be still available
-	res, hit, err = testCache.Get(context.Background(), "test_key")
-	assert.Equal(t, true, hit)
+	res, state, err = testCache.Get(context.Background(), "test_key")
+	assert.Equal(t, StateHit, state)
 	assert.NoError(t, err)
 	assert.Equal(t, "test_result", res)
 	assert.True(t, hasEntry(testCache, "test_key"))

@@ -28,9 +28,8 @@ var ErrNoUpdateFunc = errors.New("concache: no update function configured")
 // the client side.
 type UpdateFunc[T any] func(ctx context.Context, key string) (EntryUpdate[T], error)
 
-// UpdateCache is an in-memory cache that provides only a Get method to retrieve values from a given
-// key. In case the entry is missing or expired, it will be updated within the Get method from the
-// UpdateFunc.
+// UpdateCache is an in-memory cache that retrieves values by key through Get and GetWith. In case
+// the entry is missing or expired, it will be updated within the lookup from the UpdateFunc.
 type UpdateCache[T any] struct {
 	keyLocks    *keyedMutex
 	entriesLock sync.RWMutex
@@ -49,7 +48,7 @@ type UpdateCache[T any] struct {
 // individual update may override the ttl through EntryUpdate.TTL.
 //
 // See WithMaxEntries and WithMaxStaleAge for the available options. The UpdateFunc may be nil for a
-// cache that is only used through GetEntryWith.
+// cache that is only used through GetWith.
 //
 // The UpdateCache is thread-safe and can be called from multiple goroutines.
 func NewUpdateCache[T any](ttl time.Duration, updateFunc UpdateFunc[T], options ...Option) *UpdateCache[T] {
@@ -71,41 +70,37 @@ func NewUpdateCache[T any](ttl time.Duration, updateFunc UpdateFunc[T], options 
 	}
 }
 
-// Get returns the entry for the given key. In case the entry is cached and not expired, it will
-// return it immediately from the cache. Otherwise, Get will try to update the entry using the
-// UpdateFunc.
+// Get returns the value for the given key along with the EntryState that says where it came from. In
+// case the entry is cached and not expired, it will return it immediately from the cache as
+// StateHit. Otherwise, Get will try to update the entry using the UpdateFunc and return the result
+// as StateFresh.
 //
-// Get never returns a stale value, regardless of WithMaxStaleAge. Use GetEntry for that.
+// When the UpdateFunc fails, Get returns StateMiss and the error. If the cache was built
+// WithMaxStaleAge and an expired value is still within its stale window, Get returns that value as
+// StateStale instead, together with the error that explains why it could not be refreshed. A
+// StateStale value is usable; callers that would rather fail than serve an old answer can simply
+// treat any non-nil error as fatal.
 //
-// This method is thread-safe and can be called from multiple goroutines. If there are multiple
-// concurrent calls on the same uncached key, the UpdateFunc will only be executed on the first call
-// while all subsequent calls will block until the cache has been updated.
-func (c *UpdateCache[T]) Get(ctx context.Context, key string) (res T, hit bool, err error) {
-
-	value, state, err := c.get(ctx, key, c.updateFunc, false)
-
-	return value, state == StateHit, err
+// This method is thread-safe and can be called from multiple goroutines. Concurrent calls on the
+// same key are serialized: the first call runs the UpdateFunc while the others block, and once it
+// succeeds they all receive the cached result without calling the UpdateFunc again. If it fails, the
+// result is not cached and the next waiting call runs the UpdateFunc itself, so an outage of the
+// data source can cost one call per waiter rather than one per key.
+func (c *UpdateCache[T]) Get(ctx context.Context, key string) (res T, state EntryState, err error) {
+	return c.get(ctx, key, c.updateFunc)
 }
 
-// GetEntry behaves like Get but also reports where the value came from, and may return an expired
-// value when the cache was built WithMaxStaleAge and the UpdateFunc failed.
-//
-// When the returned state is StateStale the value is usable and the error explains why it could not
-// be refreshed. Callers that treat any non-nil error as fatal should use Get instead.
-func (c *UpdateCache[T]) GetEntry(ctx context.Context, key string) (res T, state EntryState, err error) {
-	return c.get(ctx, key, c.updateFunc, true)
-}
-
-// GetEntryWith behaves like GetEntry but takes the UpdateFunc per call.
+// GetWith behaves like Get but takes the UpdateFunc per call.
 //
 // This is for callers whose key cannot carry everything the update needs, for example when the key
-// is a hash of the request rather than the request itself. Single-flight still applies per key, so
-// on concurrent calls only the first updateFunc runs.
-func (c *UpdateCache[T]) GetEntryWith(ctx context.Context, key string, updateFunc UpdateFunc[T]) (res T, state EntryState, err error) {
-	return c.get(ctx, key, updateFunc, true)
+// is a hash of the request rather than the request itself. Concurrent calls on the same key are
+// serialized as described on Get: a successful update is shared with all waiting calls, a failed one
+// is retried by the next waiting call with its own updateFunc.
+func (c *UpdateCache[T]) GetWith(ctx context.Context, key string, updateFunc UpdateFunc[T]) (res T, state EntryState, err error) {
+	return c.get(ctx, key, updateFunc)
 }
 
-func (c *UpdateCache[T]) get(ctx context.Context, key string, updateFunc UpdateFunc[T], allowStale bool) (T, EntryState, error) {
+func (c *UpdateCache[T]) get(ctx context.Context, key string, updateFunc UpdateFunc[T]) (T, EntryState, error) {
 
 	var zero T
 
@@ -126,9 +121,9 @@ func (c *UpdateCache[T]) get(ctx context.Context, key string, updateFunc UpdateF
 	// In case we receive an *UpdateFunc* error here, we won't store the result and just return the
 	// error. In this case, we want to retry loading the entry again on the next Get call.
 	if err != nil {
-		// Serving the expired value beats serving nothing, for callers that asked for it and for as
-		// long as the entry has not gone past its stale window.
-		if allowStale && cachedExists && c.isWithinStaleWindow(cached) {
+		// Serving the expired value beats serving nothing, for as long as the entry has not gone past
+		// its stale window. Without WithMaxStaleAge that window is empty.
+		if cachedExists && c.isWithinStaleWindow(cached) {
 			return cached.Value, StateStale, err
 		}
 

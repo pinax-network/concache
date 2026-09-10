@@ -85,11 +85,11 @@ func TestEntryUpdate_TTLOverridesTheDefault(t *testing.T) {
 	assert.Equal(t, now.Add(time.Minute), entryOf(cache, "default").ExpiresAt, "a zero ttl must fall back to the cache default")
 }
 
-func TestGetEntryWith_UsesThePerCallUpdateFunc(t *testing.T) {
+func TestGetWith_UsesThePerCallUpdateFunc(t *testing.T) {
 
 	cache := NewUpdateCache[string](time.Minute, nil)
 
-	value, state, err := cache.GetEntryWith(context.Background(), "key", func(_ context.Context, _ string) (EntryUpdate[string], error) {
+	value, state, err := cache.GetWith(context.Background(), "key", func(_ context.Context, _ string) (EntryUpdate[string], error) {
 		return EntryUpdate[string]{Value: "from the caller"}, nil
 	})
 
@@ -98,13 +98,13 @@ func TestGetEntryWith_UsesThePerCallUpdateFunc(t *testing.T) {
 	assert.Equal(t, "from the caller", value)
 
 	// The value is cached like any other, so a later read does not need an update function at all.
-	value, state, err = cache.GetEntry(context.Background(), "key")
+	value, state, err = cache.Get(context.Background(), "key")
 	require.NoError(t, err)
 	assert.Equal(t, StateHit, state)
 	assert.Equal(t, "from the caller", value)
 }
 
-func TestGetEntryWith_SingleFlightPerKey(t *testing.T) {
+func TestGetWith_SingleFlightPerKey(t *testing.T) {
 
 	cache := NewUpdateCache[string](time.Minute, nil)
 
@@ -117,7 +117,7 @@ func TestGetEntryWith_SingleFlightPerKey(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			_, _, err := cache.GetEntryWith(context.Background(), "key", func(_ context.Context, _ string) (EntryUpdate[string], error) {
+			_, _, err := cache.GetWith(context.Background(), "key", func(_ context.Context, _ string) (EntryUpdate[string], error) {
 				callsLock.Lock()
 				calls++
 				callsLock.Unlock()
@@ -140,8 +140,20 @@ func TestGet_WithoutAnUpdateFunc(t *testing.T) {
 
 	cache := NewUpdateCache[string](time.Minute, nil)
 
-	_, hit, err := cache.Get(context.Background(), "key")
+	_, state, err := cache.Get(context.Background(), "key")
 
-	assert.False(t, hit)
+	assert.Equal(t, StateMiss, state)
 	assert.ErrorIs(t, err, ErrNoUpdateFunc)
+}
+
+func TestWithMaxEntries_NegativeIsUnbounded(t *testing.T) {
+
+	cache := echoCache(t, WithMaxEntries(-1))
+
+	for i := 0; i < 200; i++ {
+		_, _, err := cache.Get(context.Background(), strconv.Itoa(i))
+		require.NoError(t, err)
+	}
+
+	assert.Equal(t, 200, cache.Len())
 }
