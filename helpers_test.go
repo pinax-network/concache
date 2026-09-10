@@ -25,8 +25,10 @@ func entryOf[T any](cache *UpdateCache[T], key string) *Entry[T] {
 	return element.Value.(*Entry[T])
 }
 
+// expireEntry backdates an entry's expiry relative to the cache's own clock, so it works with an
+// injected clock too.
 func expireEntry[T any](cache *UpdateCache[T], key string) {
-	entryOf(cache, key).ExpiresAt = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	entryOf(cache, key).ExpiresAt = cache.now().Add(-time.Hour)
 }
 
 func hasEntry[T any](cache *UpdateCache[T], key string) bool {

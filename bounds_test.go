@@ -6,9 +6,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func echoCache(t *testing.T, options ...Option) *UpdateCache[string] {
@@ -26,13 +23,13 @@ func TestWithMaxEntries_EvictsLeastRecentlyStored(t *testing.T) {
 
 	for _, key := range []string{"a", "b", "c"} {
 		_, _, err := cache.Get(context.Background(), key)
-		require.NoError(t, err)
+		requireNoError(t, err)
 	}
 
-	assert.Equal(t, 2, cache.Len())
-	assert.False(t, hasEntry(cache, "a"), "the least recently stored entry must be evicted")
-	assert.True(t, hasEntry(cache, "b"))
-	assert.True(t, hasEntry(cache, "c"))
+	assertEqual(t, cache.Len(), 2)
+	assertFalse(t, hasEntry(cache, "a"), "the least recently stored entry must be evicted")
+	assertTrue(t, hasEntry(cache, "b"))
+	assertTrue(t, hasEntry(cache, "c"))
 }
 
 func TestWithMaxEntries_RewriteRefreshesPosition(t *testing.T) {
@@ -44,13 +41,13 @@ func TestWithMaxEntries_RewriteRefreshesPosition(t *testing.T) {
 	putEntry(cache, "b", "b", time.Now().Add(time.Hour))
 
 	_, _, err := cache.Get(context.Background(), "a")
-	require.NoError(t, err)
+	requireNoError(t, err)
 
 	_, _, err = cache.Get(context.Background(), "c")
-	require.NoError(t, err)
+	requireNoError(t, err)
 
-	assert.True(t, hasEntry(cache, "a"), "the rewritten entry must not be the eviction candidate")
-	assert.False(t, hasEntry(cache, "b"))
+	assertTrue(t, hasEntry(cache, "a"), "the rewritten entry must not be the eviction candidate")
+	assertFalse(t, hasEntry(cache, "b"))
 }
 
 func TestWithMaxEntries_UnboundedByDefault(t *testing.T) {
@@ -59,10 +56,10 @@ func TestWithMaxEntries_UnboundedByDefault(t *testing.T) {
 
 	for i := 0; i < 200; i++ {
 		_, _, err := cache.Get(context.Background(), strconv.Itoa(i))
-		require.NoError(t, err)
+		requireNoError(t, err)
 	}
 
-	assert.Equal(t, 200, cache.Len())
+	assertEqual(t, cache.Len(), 200)
 }
 
 func TestEntryUpdate_TTLOverridesTheDefault(t *testing.T) {
@@ -77,12 +74,12 @@ func TestEntryUpdate_TTLOverridesTheDefault(t *testing.T) {
 
 	for _, key := range []string{"short", "long", "default"} {
 		_, _, err := cache.Get(context.Background(), key)
-		require.NoError(t, err)
+		requireNoError(t, err)
 	}
 
-	assert.Equal(t, now.Add(time.Second), entryOf(cache, "short").ExpiresAt)
-	assert.Equal(t, now.Add(time.Hour), entryOf(cache, "long").ExpiresAt)
-	assert.Equal(t, now.Add(time.Minute), entryOf(cache, "default").ExpiresAt, "a zero ttl must fall back to the cache default")
+	assertTimeEqual(t, entryOf(cache, "short").ExpiresAt, now.Add(time.Second))
+	assertTimeEqual(t, entryOf(cache, "long").ExpiresAt, now.Add(time.Hour))
+	assertTimeEqual(t, entryOf(cache, "default").ExpiresAt, now.Add(time.Minute), "a zero ttl must fall back to the cache default")
 }
 
 func TestGetWith_UsesThePerCallUpdateFunc(t *testing.T) {
@@ -93,15 +90,15 @@ func TestGetWith_UsesThePerCallUpdateFunc(t *testing.T) {
 		return EntryUpdate[string]{Value: "from the caller"}, nil
 	})
 
-	require.NoError(t, err)
-	assert.Equal(t, StateFresh, state)
-	assert.Equal(t, "from the caller", value)
+	requireNoError(t, err)
+	assertEqual(t, state, StateFresh)
+	assertEqual(t, value, "from the caller")
 
 	// The value is cached like any other, so a later read does not need an update function at all.
 	value, state, err = cache.Get(context.Background(), "key")
-	require.NoError(t, err)
-	assert.Equal(t, StateHit, state)
-	assert.Equal(t, "from the caller", value)
+	requireNoError(t, err)
+	assertEqual(t, state, StateHit)
+	assertEqual(t, value, "from the caller")
 }
 
 func TestGetWith_SingleFlightPerKey(t *testing.T) {
@@ -126,14 +123,14 @@ func TestGetWith_SingleFlightPerKey(t *testing.T) {
 
 				return EntryUpdate[string]{Value: "value"}, nil
 			})
-			assert.NoError(t, err)
+			assertNoError(t, err)
 		}()
 	}
 	wg.Wait()
 
 	callsLock.Lock()
 	defer callsLock.Unlock()
-	assert.Equal(t, 1, calls, "concurrent readers of one key must share a single update")
+	assertEqual(t, calls, 1, "concurrent readers of one key must share a single update")
 }
 
 func TestGet_WithoutAnUpdateFunc(t *testing.T) {
@@ -142,8 +139,8 @@ func TestGet_WithoutAnUpdateFunc(t *testing.T) {
 
 	_, state, err := cache.Get(context.Background(), "key")
 
-	assert.Equal(t, StateMiss, state)
-	assert.ErrorIs(t, err, ErrNoUpdateFunc)
+	assertEqual(t, state, StateMiss)
+	assertErrorIs(t, err, ErrNoUpdateFunc)
 }
 
 func TestWithMaxEntries_NegativeIsUnbounded(t *testing.T) {
@@ -152,8 +149,8 @@ func TestWithMaxEntries_NegativeIsUnbounded(t *testing.T) {
 
 	for i := 0; i < 200; i++ {
 		_, _, err := cache.Get(context.Background(), strconv.Itoa(i))
-		require.NoError(t, err)
+		requireNoError(t, err)
 	}
 
-	assert.Equal(t, 200, cache.Len())
+	assertEqual(t, cache.Len(), 200)
 }
