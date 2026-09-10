@@ -23,17 +23,17 @@ func TestCache_Get(t *testing.T) {
 	})
 
 	// test we get a valid response
-	res, hit, err := testCache.Get(context.Background(), "test_key")
+	res, state, err := testCache.Get(context.Background(), "test_key")
 	assert.NoError(t, err)
 	assert.Equal(t, "test_result", res)
-	assert.Equal(t, false, hit)
+	assert.Equal(t, StateFresh, state)
 	assert.Equal(t, 1, updateCnt)
 
 	// test the same key to ensure it's cached and UpdateFunc isn't called again
-	res, hit, err = testCache.Get(context.Background(), "test_key")
+	res, state, err = testCache.Get(context.Background(), "test_key")
 	assert.NoError(t, err)
 	assert.Equal(t, "test_result", res)
-	assert.Equal(t, true, hit)
+	assert.Equal(t, StateHit, state)
 	assert.Equal(t, 1, updateCnt)
 }
 
@@ -102,25 +102,21 @@ func TestCache_GetExpires(t *testing.T) {
 			Error: nil,
 		}, nil
 	})
-	testCache.entries["test_key"] = &Entry[string]{
-		Value:     "test_result",
-		Error:     nil,
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-	}
+	putEntry(testCache, "test_key", "test_result", time.Now().Add(5*time.Minute))
 
 	// test we get a cached response
-	res, hit, err := testCache.Get(context.Background(), "test_key")
+	res, state, err := testCache.Get(context.Background(), "test_key")
 	assert.NoError(t, err)
 	assert.Equal(t, "test_result", res)
-	assert.Equal(t, true, hit)
+	assert.Equal(t, StateHit, state)
 	assert.Equal(t, 0, updateCnt)
 
 	// test we update the expired entry
-	testCache.entries["test_key"].ExpiresAt = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
-	res, hit, err = testCache.Get(context.Background(), "test_key")
+	expireEntry(testCache, "test_key")
+	res, state, err = testCache.Get(context.Background(), "test_key")
 	assert.NoError(t, err)
 	assert.Equal(t, "test_result", res)
-	assert.Equal(t, false, hit)
+	assert.Equal(t, StateFresh, state)
 	assert.Equal(t, 1, updateCnt)
 }
 
@@ -135,16 +131,16 @@ func TestCache_GetError(t *testing.T) {
 	})
 
 	// we should get a test error
-	_, hit, err := testCache.Get(context.Background(), "test_key")
+	_, state, err := testCache.Get(context.Background(), "test_key")
 	assert.Equal(t, testError, err)
 	assert.Equal(t, 1, updateCnt)
-	assert.Equal(t, false, hit)
+	assert.Equal(t, StateMiss, state)
 
 	// no entry should be cached, so calling Get() again should trigger the UpdateFunc
-	_, hit, err = testCache.Get(context.Background(), "test_key")
+	_, state, err = testCache.Get(context.Background(), "test_key")
 	assert.Equal(t, testError, err)
 	assert.Equal(t, 2, updateCnt)
-	assert.Equal(t, false, hit)
+	assert.Equal(t, StateMiss, state)
 }
 
 func TestCache_GetEmbeddedError(t *testing.T) {
@@ -158,16 +154,16 @@ func TestCache_GetEmbeddedError(t *testing.T) {
 	})
 
 	// we should get a test error
-	_, hit, err := testCache.Get(context.Background(), "test_key")
+	_, state, err := testCache.Get(context.Background(), "test_key")
 	assert.Equal(t, testError, err)
 	assert.Equal(t, 1, updateCnt)
-	assert.Equal(t, false, hit)
+	assert.Equal(t, StateFresh, state)
 
 	// as the error is embedded, it should be cached
-	_, hit, err = testCache.Get(context.Background(), "test_key")
+	_, state, err = testCache.Get(context.Background(), "test_key")
 	assert.Equal(t, testError, err)
 	assert.Equal(t, 1, updateCnt)
-	assert.Equal(t, true, hit)
+	assert.Equal(t, StateHit, state)
 }
 
 func TestCache_GetParallelErrors(t *testing.T) {
@@ -211,51 +207,50 @@ func TestCache_Prune(t *testing.T) {
 	testCache := NewUpdateCache(1*time.Minute, func(ctx context.Context, key string) (EntryUpdate[string], error) {
 		return EntryUpdate[string]{}, notImplementedError
 	})
-	testCache.entries["test_key"] = &Entry[string]{
-		Value:     "test_result",
-		Error:     nil,
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-	}
-	testCache.entries["test_key_expired"] = &Entry[string]{
-		Value:     "test_result_expired",
-		Error:     nil,
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-	}
+	putEntry(testCache, "test_key", "test_result", time.Now().Add(5*time.Minute))
+	putEntry(testCache, "test_key_expired", "test_result_expired", time.Now().Add(5*time.Minute))
 
 	// we load it first to initialize the locks
-	res, hit, err := testCache.Get(context.Background(), "test_key_expired")
-	assert.Equal(t, true, hit)
+	res, state, err := testCache.Get(context.Background(), "test_key_expired")
+	assert.Equal(t, StateHit, state)
 	assert.NoError(t, err)
 	assert.Equal(t, "test_result_expired", res)
-
-	_, hasValue := testCache.entries["test_key_expired"]
-	assert.Equal(t, true, hasValue)
-	_, hasLock := testCache.keyLocks.locks["test_key_expired"]
-	assert.Equal(t, true, hasLock)
+	assert.True(t, hasEntry(testCache, "test_key_expired"))
 
 	// now we set it expired
-	testCache.entries["test_key_expired"].ExpiresAt = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	expireEntry(testCache, "test_key_expired")
 
 	// prune the cache to remove test_key_expired
 	testCache.Prune()
 
 	// the expired entry should be gone now
-	_, hasValue = testCache.entries["test_key_expired"]
-	assert.Equal(t, false, hasValue)
-	_, hasLock = testCache.keyLocks.locks["test_key_expired"]
-	assert.Equal(t, false, hasLock)
-	_, hit, err = testCache.Get(context.Background(), "test_key_expired")
-	assert.Equal(t, false, hit)
+	assert.False(t, hasEntry(testCache, "test_key_expired"))
+	_, state, err = testCache.Get(context.Background(), "test_key_expired")
+	assert.Equal(t, StateMiss, state)
 	assert.Equal(t, notImplementedError, err)
 
 	// the test_key should be still available
-	res, hit, err = testCache.Get(context.Background(), "test_key")
-	assert.Equal(t, true, hit)
+	res, state, err = testCache.Get(context.Background(), "test_key")
+	assert.Equal(t, StateHit, state)
 	assert.NoError(t, err)
 	assert.Equal(t, "test_result", res)
+	assert.True(t, hasEntry(testCache, "test_key"))
+}
 
-	_, hasValue = testCache.entries["test_key"]
-	assert.Equal(t, true, hasValue)
-	_, hasLock = testCache.keyLocks.locks["test_key"]
-	assert.Equal(t, true, hasLock)
+func TestCache_KeyLocksDoNotLeak(t *testing.T) {
+
+	testCache := NewUpdateCache(5*time.Minute, func(ctx context.Context, key string) (EntryUpdate[string], error) {
+		return EntryUpdate[string]{Value: key}, nil
+	})
+
+	for i := 0; i < 100; i++ {
+		_, _, err := testCache.Get(context.Background(), strconv.Itoa(i))
+		assert.NoError(t, err)
+	}
+
+	// The locks are reference counted, so they are gone once released. Otherwise the lock map would
+	// grow with the key space even when the entries themselves are bounded.
+	testCache.keyLocks.mapLock.Lock()
+	defer testCache.keyLocks.mapLock.Unlock()
+	assert.Empty(t, testCache.keyLocks.locks)
 }
