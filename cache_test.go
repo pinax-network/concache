@@ -3,7 +3,6 @@ package concache
 import (
 	"context"
 	"errors"
-	"github.com/stretchr/testify/assert"
 	"strconv"
 	"sync"
 	"testing"
@@ -24,17 +23,17 @@ func TestCache_Get(t *testing.T) {
 
 	// test we get a valid response
 	res, state, err := testCache.Get(context.Background(), "test_key")
-	assert.NoError(t, err)
-	assert.Equal(t, "test_result", res)
-	assert.Equal(t, StateFresh, state)
-	assert.Equal(t, 1, updateCnt)
+	assertNoError(t, err)
+	assertEqual(t, res, "test_result")
+	assertEqual(t, state, StateFresh)
+	assertEqual(t, updateCnt, 1)
 
 	// test the same key to ensure it's cached and UpdateFunc isn't called again
 	res, state, err = testCache.Get(context.Background(), "test_key")
-	assert.NoError(t, err)
-	assert.Equal(t, "test_result", res)
-	assert.Equal(t, StateHit, state)
-	assert.Equal(t, 1, updateCnt)
+	assertNoError(t, err)
+	assertEqual(t, res, "test_result")
+	assertEqual(t, state, StateHit)
+	assertEqual(t, updateCnt, 1)
 }
 
 func TestCache_GetParallel(t *testing.T) {
@@ -56,14 +55,14 @@ func TestCache_GetParallel(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func() {
 			res, _, err := testCache.Get(context.Background(), "test_key")
-			assert.NoError(t, err)
-			assert.Equal(t, "test_result", res)
+			assertNoError(t, err)
+			assertEqual(t, res, "test_result")
 			wg.Done()
 		}()
 	}
 
 	wg.Wait()
-	assert.Equal(t, 1, updateCnt)
+	assertEqual(t, updateCnt, 1)
 }
 
 func TestCache_GetParallelDistinctKeys(t *testing.T) {
@@ -82,8 +81,8 @@ func TestCache_GetParallelDistinctKeys(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
 				res, _, err := testCache.Get(context.Background(), key)
-				assert.NoError(t, err)
-				assert.Equal(t, key, res)
+				assertNoError(t, err)
+				assertEqual(t, res, key)
 			}
 		}()
 	}
@@ -106,18 +105,18 @@ func TestCache_GetExpires(t *testing.T) {
 
 	// test we get a cached response
 	res, state, err := testCache.Get(context.Background(), "test_key")
-	assert.NoError(t, err)
-	assert.Equal(t, "test_result", res)
-	assert.Equal(t, StateHit, state)
-	assert.Equal(t, 0, updateCnt)
+	assertNoError(t, err)
+	assertEqual(t, res, "test_result")
+	assertEqual(t, state, StateHit)
+	assertEqual(t, updateCnt, 0)
 
 	// test we update the expired entry
 	expireEntry(testCache, "test_key")
 	res, state, err = testCache.Get(context.Background(), "test_key")
-	assert.NoError(t, err)
-	assert.Equal(t, "test_result", res)
-	assert.Equal(t, StateFresh, state)
-	assert.Equal(t, 1, updateCnt)
+	assertNoError(t, err)
+	assertEqual(t, res, "test_result")
+	assertEqual(t, state, StateFresh)
+	assertEqual(t, updateCnt, 1)
 }
 
 func TestCache_GetError(t *testing.T) {
@@ -132,15 +131,15 @@ func TestCache_GetError(t *testing.T) {
 
 	// we should get a test error
 	_, state, err := testCache.Get(context.Background(), "test_key")
-	assert.Equal(t, testError, err)
-	assert.Equal(t, 1, updateCnt)
-	assert.Equal(t, StateMiss, state)
+	assertErrorIs(t, err, testError)
+	assertEqual(t, updateCnt, 1)
+	assertEqual(t, state, StateMiss)
 
 	// no entry should be cached, so calling Get() again should trigger the UpdateFunc
 	_, state, err = testCache.Get(context.Background(), "test_key")
-	assert.Equal(t, testError, err)
-	assert.Equal(t, 2, updateCnt)
-	assert.Equal(t, StateMiss, state)
+	assertErrorIs(t, err, testError)
+	assertEqual(t, updateCnt, 2)
+	assertEqual(t, state, StateMiss)
 }
 
 func TestCache_GetEmbeddedError(t *testing.T) {
@@ -155,15 +154,15 @@ func TestCache_GetEmbeddedError(t *testing.T) {
 
 	// we should get a test error
 	_, state, err := testCache.Get(context.Background(), "test_key")
-	assert.Equal(t, testError, err)
-	assert.Equal(t, 1, updateCnt)
-	assert.Equal(t, StateFresh, state)
+	assertErrorIs(t, err, testError)
+	assertEqual(t, updateCnt, 1)
+	assertEqual(t, state, StateFresh)
 
 	// as the error is embedded, it should be cached
 	_, state, err = testCache.Get(context.Background(), "test_key")
-	assert.Equal(t, testError, err)
-	assert.Equal(t, 1, updateCnt)
-	assert.Equal(t, StateHit, state)
+	assertErrorIs(t, err, testError)
+	assertEqual(t, updateCnt, 1)
+	assertEqual(t, state, StateHit)
 }
 
 func TestCache_GetParallelErrors(t *testing.T) {
@@ -197,7 +196,7 @@ func TestCache_GetParallelErrors(t *testing.T) {
 	}
 
 	wg.Wait()
-	assert.Equal(t, 3, updateCnt)
+	assertEqual(t, updateCnt, 3)
 }
 
 func TestCache_Prune(t *testing.T) {
@@ -212,10 +211,10 @@ func TestCache_Prune(t *testing.T) {
 
 	// we load it first to initialize the locks
 	res, state, err := testCache.Get(context.Background(), "test_key_expired")
-	assert.Equal(t, StateHit, state)
-	assert.NoError(t, err)
-	assert.Equal(t, "test_result_expired", res)
-	assert.True(t, hasEntry(testCache, "test_key_expired"))
+	assertEqual(t, state, StateHit)
+	assertNoError(t, err)
+	assertEqual(t, res, "test_result_expired")
+	assertTrue(t, hasEntry(testCache, "test_key_expired"))
 
 	// now we set it expired
 	expireEntry(testCache, "test_key_expired")
@@ -224,17 +223,17 @@ func TestCache_Prune(t *testing.T) {
 	testCache.Prune()
 
 	// the expired entry should be gone now
-	assert.False(t, hasEntry(testCache, "test_key_expired"))
+	assertFalse(t, hasEntry(testCache, "test_key_expired"))
 	_, state, err = testCache.Get(context.Background(), "test_key_expired")
-	assert.Equal(t, StateMiss, state)
-	assert.Equal(t, notImplementedError, err)
+	assertEqual(t, state, StateMiss)
+	assertErrorIs(t, err, notImplementedError)
 
 	// the test_key should be still available
 	res, state, err = testCache.Get(context.Background(), "test_key")
-	assert.Equal(t, StateHit, state)
-	assert.NoError(t, err)
-	assert.Equal(t, "test_result", res)
-	assert.True(t, hasEntry(testCache, "test_key"))
+	assertEqual(t, state, StateHit)
+	assertNoError(t, err)
+	assertEqual(t, res, "test_result")
+	assertTrue(t, hasEntry(testCache, "test_key"))
 }
 
 func TestCache_KeyLocksDoNotLeak(t *testing.T) {
@@ -245,12 +244,12 @@ func TestCache_KeyLocksDoNotLeak(t *testing.T) {
 
 	for i := 0; i < 100; i++ {
 		_, _, err := testCache.Get(context.Background(), strconv.Itoa(i))
-		assert.NoError(t, err)
+		assertNoError(t, err)
 	}
 
 	// The locks are reference counted, so they are gone once released. Otherwise the lock map would
 	// grow with the key space even when the entries themselves are bounded.
 	testCache.keyLocks.mapLock.Lock()
 	defer testCache.keyLocks.mapLock.Unlock()
-	assert.Empty(t, testCache.keyLocks.locks)
+	assertEqual(t, len(testCache.keyLocks.locks), 0, "released key locks must not be retained")
 }
