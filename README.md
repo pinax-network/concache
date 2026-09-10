@@ -129,3 +129,77 @@ updateUserFunc := func (ctx context.Context, userId string) (concache.EntryUpdat
     return concache.EntryUpdate[string]{}, errors.New("temporary connection issues")
 }
 ```
+
+## Bounding the cache
+
+By default the cache grows with the key space. When keys come from open-ended or untrusted input,
+bound it:
+
+```golang
+cache := concache.NewUpdateCache(5*time.Minute, updateFunc, concache.WithMaxEntries(50_000))
+```
+
+Once the limit is reached, storing a new entry drops the least recently stored one. Note that
+`Prune()` still has to be called periodically to release entries that expired while the cache sat
+below the limit:
+
+```golang
+go func() {
+    for range time.Tick(time.Minute) {
+        cache.Prune()
+    }
+}()
+```
+
+## Serving stale values while the source is down
+
+`Get` returns an error whenever the entry is expired and the `UpdateFunc` fails, which means a
+temporary outage of the underlying data source turns into an outage for the caller. When serving the
+previous answer is better than serving none, allow stale reads and use `GetEntry`:
+
+```golang
+cache := concache.NewUpdateCache(time.Minute, updateFunc, concache.WithMaxStaleAge(time.Hour))
+
+value, state, err := cache.GetEntry(ctx, "my_key")
+switch state {
+case concache.StateHit, concache.StateFresh:
+    // value is current
+case concache.StateStale:
+    // value is the previous answer, err explains why it could not be refreshed
+case concache.StateMiss:
+    // nothing usable, err explains why
+}
+```
+
+An entry may be served stale until `maxStaleAge` past its expiry, after which it is dropped. That
+bound matters: it decides how long the cache keeps handing out an answer that may no longer be true.
+
+`Get` never returns a stale value, so enabling the option cannot change the behaviour of existing
+callers.
+
+## Per-entry TTL
+
+An `UpdateFunc` can override the cache's ttl for the entry it just produced by setting
+`EntryUpdate.TTL`. This is useful when the data source tells you how long its answer is good for:
+
+```golang
+return concache.EntryUpdate[Response]{Value: response, TTL: response.CacheFor}, nil
+```
+
+A zero `TTL` uses the cache default.
+
+## Supplying the update function per call
+
+`GetEntryWith` takes the `UpdateFunc` as an argument, for callers whose key cannot carry everything
+the update needs — for example when the key is a hash of a request rather than the request itself:
+
+```golang
+cache := concache.NewUpdateCache[Response](time.Minute, nil, concache.WithMaxStaleAge(time.Hour))
+
+value, state, err := cache.GetEntryWith(ctx, hashOf(request), func(ctx context.Context, _ string) (concache.EntryUpdate[Response], error) {
+    return load(ctx, request)
+})
+```
+
+Single-flight still applies per key, so concurrent calls on the same key run only the first update
+function.
